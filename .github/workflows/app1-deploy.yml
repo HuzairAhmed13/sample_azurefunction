@@ -11,56 +11,45 @@ jobs:
 
     steps:
 
-    # 1. Checkout the repository
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 2. Login to Azure using Service Principal credentials
-    - name: Azure Login
+    - name: Login to Azure
       uses: azure/login@v1
       with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    # 3. Debug the actual subscription ID
     - name: Debug Subscription
       run: |
         echo "Active Azure Subscription:"
         az account show -o table
 
-    # 4. Create RG + Storage + Function App
     - name: Deploy Azure Resources
       run: |
-        # Capture active subscription (NO HARDCODE)
         SUBSCRIPTION_ID=$(az account show --query id -o tsv)
         echo "Using Subscription ID: $SUBSCRIPTION_ID"
-        
-        RESOURCE_GROUP="MyFunctionRG"
+
+        RG="MyFunctionRG"
         LOCATION="eastus"
-        STORAGE_NAME="myapp1store2024"
-        FUNCTION_APP="myfunc2024app"
+        STORAGE="myapp1store2024"
+        FUNCAPP="myfunc2024app"
 
-        echo "Ensuring Resource Group exists..."
-        az group create -n $RESOURCE_GROUP -l $LOCATION
+        az group create -n $RG -l $LOCATION
 
-        echo "Creating Storage Account (if not exists)..."
         az storage account create \
-          -g $RESOURCE_GROUP \
-          -n $STORAGE_NAME \
+          -g $RG \
+          -n $STORAGE \
           -l $LOCATION \
           --sku Standard_LRS
 
-        echo "Creating Function App..."
         az functionapp create \
-          --resource-group $RESOURCE_GROUP \
-          --name $FUNCTION_APP \
-          --storage-account $STORAGE_NAME \
+          --resource-group $RG \
+          --name $FUNCAPP \
+          --storage-account $STORAGE \
           --consumption-plan-location $LOCATION \
           --runtime python \
           --functions-version 4
 
-    # 5. Deploy code using the official action
     - name: Deploy to Function App
       uses: Azure/functions-action@v1
       with:
