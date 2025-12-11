@@ -1,0 +1,91 @@
+name: Deploy App1 (Function)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'apps/MyFunctionApp/**' # Trigger only when App1 changes
+  workflow_dispatch:
+
+env:
+  # --- CONFIGURATION ---
+  AZURE_FUNCTIONAPP_NAME: 'my-unique-app1-func' # CHANGE THIS: Must be globally unique
+  RESOURCE_GROUP_NAME: 'HuzairRG'
+  STORAGE_ACCOUNT_NAME: 'myapp1store' # CHANGE THIS: Lowercase only, no special chars
+  LOCATION: 'eastus'
+  DOTNET_VERSION: '8.0.x' # Target .NET 8
+  APP_PACKAGE_PATH: 'apps/app1' # Path to your specific app folder
+  # ---------------------
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Checkout Code
+      - name: 'Checkout GitHub Action'
+        uses: actions/checkout@v4
+
+      # 2. Login to Azure
+      - name: 'Login via Azure CLI'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 3. Create Infrastructure (If it doesn't exist)
+      - name: 'Ensure Azure Resources Exist'
+        uses: azure/CLI@v1
+        with:
+          inlineScript: |
+            # Set auto-install to avoid prompts if extensions are missing
+            az config set extension.use_dynamic_install=yes_without_prompt
+
+            echo "Checking Resource Group..."
+            if [ $(az group exists --name ${{ env.RESOURCE_GROUP_NAME }}) = false ]; then
+              az group create --name ${{ env.RESOURCE_GROUP_NAME }} --location ${{ env.LOCATION }}
+            fi
+
+            echo "Checking Storage Account..."
+            # Check if storage exists by listing connection string (suppress output)
+            az storage account show --name ${{ env.STORAGE_ACCOUNT_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} > /dev/null 2>&1
+            if [ $? -ne 0 ]; then
+              echo "Creating Storage Account..."
+              az storage account create --name ${{ env.STORAGE_ACCOUNT_NAME }} --location ${{ env.LOCATION }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} --sku Standard_LRS
+            fi
+
+            echo "Checking Function App..."
+            az functionapp show --name ${{ env.AZURE_FUNCTIONAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} > /dev/null 2>&1
+            if [ $? -ne 0 ]; then
+              echo "Creating Function App..."
+              az functionapp create --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
+                --storage-account ${{ env.STORAGE_ACCOUNT_NAME }} \
+                --consumption-plan-location ${{ env.LOCATION }} \
+                --resource-group ${{ env.RESOURCE_GROUP_NAME }} \
+                --os-type Windows \
+                --runtime dotnet-isolated \
+                --functions-version 4
+            fi
+
+      # 4. Setup .NET
+      - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      # 5. Build the Code
+      - name: 'Build and Publish to Output Directory'
+        shell: bash
+        run: |
+          pushd './${{ env.APP_PACKAGE_PATH }}'
+          dotnet build --configuration Release --output ./output
+          popd
+
+      # 6. Deploy to Azure (Equivalent to 'func azure functionapp publish')
+      - name: 'Deploy to Azure Function App'
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: '${{ env.APP_PACKAGE_PATH }}/output'
