@@ -36,43 +36,40 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 3. Create Infrastructure (DIRECT SHELL EXECUTION)
-      # This runs directly on the machine, fixing the SubscriptionNotFound error
+      # 3. Create Infrastructure (With Explicit Subscription ID)
       - name: 'Ensure Azure Resources Exist'
         shell: bash
         run: |
-          # Failsafe: Explicitly set the subscription to be sure
-          # We extract the ID from the secret just to be safe, or rely on the login defaults.
-          
-          echo "Debug: Active Account Info:"
-          az account show --output table
+          # 1. Capture the Subscription ID explicitly
+          SUB_ID=$(az account show --query id -o tsv)
+          echo "Debug: Forcing operations on Subscription ID: $SUB_ID"
 
-          # Set bash variables from the workflow env variables
+          # 2. Set variables
           RG_NAME="${{ env.RESOURCE_GROUP_NAME }}"
           SA_NAME="${{ env.STORAGE_ACCOUNT_NAME }}"
           FUNC_NAME="${{ env.AZURE_FUNCTIONAPP_NAME }}"
           LOC="${{ env.LOCATION }}"
 
-          # --- A. Resource Group ---
-          if [ $(az group exists --name $RG_NAME) = false ]; then
-            echo "Creating Resource Group: $RG_NAME"
-            az group create --name $RG_NAME --location $LOC
-          else
-            echo "Resource Group $RG_NAME exists."
-          fi
+          # 3. Create Resource Group
+          # We force --subscription to ensure it doesn't get lost
+          echo "Ensuring Resource Group: $RG_NAME"
+          az group create --name $RG_NAME --location $LOC --subscription $SUB_ID
 
-          # --- B. Storage Account ---
+          # 4. Create Storage Account
           echo "Checking Storage Account: $SA_NAME"
-          if ! az storage account show --name $SA_NAME --resource-group $RG_NAME > /dev/null 2>&1; then
+          if ! az storage account show --name $SA_NAME --resource-group $RG_NAME --subscription $SUB_ID > /dev/null 2>&1; then
             echo "Creating Storage Account..."
-            az storage account create --name $SA_NAME --location $LOC --resource-group $RG_NAME --sku Standard_LRS
+            az storage account create --name $SA_NAME --location $LOC --resource-group $RG_NAME --sku Standard_LRS --subscription $SUB_ID
+            
+            # small sleep to ensure Azure registers the new DNS
+            sleep 10
           else
             echo "Storage Account exists."
           fi
 
-          # --- C. Function App ---
+          # 5. Create Function App
           echo "Checking Function App: $FUNC_NAME"
-          if ! az functionapp show --name $FUNC_NAME --resource-group $RG_NAME > /dev/null 2>&1; then
+          if ! az functionapp show --name $FUNC_NAME --resource-group $RG_NAME --subscription $SUB_ID > /dev/null 2>&1; then
             echo "Creating Function App..."
             az functionapp create --name $FUNC_NAME \
               --storage-account $SA_NAME \
@@ -80,7 +77,8 @@ jobs:
               --resource-group $RG_NAME \
               --os-type Windows \
               --runtime dotnet-isolated \
-              --functions-version 4
+              --functions-version 4 \
+              --subscription $SUB_ID
           else
             echo "Function App exists."
           fi
