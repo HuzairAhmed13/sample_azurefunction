@@ -1,105 +1,69 @@
-name: Deploy App1 (Function)
+name: Deploy Azure Function
 
 on:
   push:
-    branches: ["main"]
-    paths:
-      - 'apps/app1/**'
-  workflow_dispatch:
-
-env:
-  # --- CONFIGURATION ---
-  # UPDATE THESE VALUES TO BE GLOBALLY UNIQUE
-  AZURE_FUNCTIONAPP_NAME: 'my-unique-app1-func-2024'
-  RESOURCE_GROUP_NAME: 'MyFunctionRG'
-  STORAGE_ACCOUNT_NAME: 'myapp1store2024'
-  LOCATION: 'eastus'
-  DOTNET_VERSION: '8.0.x'
-  APP_PACKAGE_PATH: 'apps/app1'
-  # ---------------------
-
-permissions:
-  id-token: write
-  contents: read
+    branches:
+      - main
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. Checkout Code
-      - name: 'Checkout GitHub Action'
-        uses: actions/checkout@v4
 
-      # 2. Login to Azure
-      - name: 'Login via Azure CLI'
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+    # 1. Checkout the repository
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      # 3. Create Infrastructure (With Explicit Subscription ID)
-      - name: 'Ensure Azure Resources Exist'
-        shell: bash
-        run: |
-          # 1. Capture the Subscription ID explicitly
-          SUB_ID=$(az account show --query id -o tsv)
-          echo "Debug: Forcing operations on Subscription ID: $SUB_ID"
+    # 2. Login to Azure using Service Principal credentials
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-          # 2. Set variables
-          RG_NAME="${{ env.RESOURCE_GROUP_NAME }}"
-          SA_NAME="${{ env.STORAGE_ACCOUNT_NAME }}"
-          FUNC_NAME="${{ env.AZURE_FUNCTIONAPP_NAME }}"
-          LOC="${{ env.LOCATION }}"
+    # 3. Debug the actual subscription ID
+    - name: Debug Subscription
+      run: |
+        echo "Active Azure Subscription:"
+        az account show -o table
 
-          # 3. Create Resource Group
-          # We force --subscription to ensure it doesn't get lost
-          echo "Ensuring Resource Group: $RG_NAME"
-          az group create --name $RG_NAME --location $LOC --subscription $SUB_ID
+    # 4. Create RG + Storage + Function App
+    - name: Deploy Azure Resources
+      run: |
+        # Capture active subscription (NO HARDCODE)
+        SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        echo "Using Subscription ID: $SUBSCRIPTION_ID"
+        
+        RESOURCE_GROUP="MyFunctionRG"
+        LOCATION="eastus"
+        STORAGE_NAME="myapp1store2024"
+        FUNCTION_APP="myfunc2024app"
 
-          # 4. Create Storage Account
-          echo "Checking Storage Account: $SA_NAME"
-          if ! az storage account show --name $SA_NAME --resource-group $RG_NAME --subscription $SUB_ID > /dev/null 2>&1; then
-            echo "Creating Storage Account..."
-            az storage account create --name $SA_NAME --location $LOC --resource-group $RG_NAME --sku Standard_LRS --subscription $SUB_ID
-            
-            # small sleep to ensure Azure registers the new DNS
-            sleep 10
-          else
-            echo "Storage Account exists."
-          fi
+        echo "Ensuring Resource Group exists..."
+        az group create -n $RESOURCE_GROUP -l $LOCATION
 
-          # 5. Create Function App
-          echo "Checking Function App: $FUNC_NAME"
-          if ! az functionapp show --name $FUNC_NAME --resource-group $RG_NAME --subscription $SUB_ID > /dev/null 2>&1; then
-            echo "Creating Function App..."
-            az functionapp create --name $FUNC_NAME \
-              --storage-account $SA_NAME \
-              --consumption-plan-location $LOC \
-              --resource-group $RG_NAME \
-              --os-type Windows \
-              --runtime dotnet-isolated \
-              --functions-version 4 \
-              --subscription $SUB_ID
-          else
-            echo "Function App exists."
-          fi
+        echo "Creating Storage Account (if not exists)..."
+        az storage account create \
+          -g $RESOURCE_GROUP \
+          -n $STORAGE_NAME \
+          -l $LOCATION \
+          --sku Standard_LRS
 
-      # 4. Setup .NET
-      - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
-        uses: actions/setup-dotnet@v1
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
+        echo "Creating Function App..."
+        az functionapp create \
+          --resource-group $RESOURCE_GROUP \
+          --name $FUNCTION_APP \
+          --storage-account $STORAGE_NAME \
+          --consumption-plan-location $LOCATION \
+          --runtime python \
+          --functions-version 4
 
-      # 5. Build the Code
-      - name: 'Build and Publish to Output Directory'
-        shell: bash
-        run: |
-          pushd './${{ env.APP_PACKAGE_PATH }}'
-          dotnet build --configuration Release --output ./output
-          popd
+    # 5. Deploy code using the official action
+    - name: Deploy to Function App
+      uses: Azure/functions-action@v1
+      with:
+        app-name: myfunc2024app
+        package: '.'
 
-      # 6. Deploy to Azure
-      - name: 'Deploy to Azure Function App'
-        uses: Azure/functions-action@v1
-        with:
-          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
-          package: '${{ env.APP_PACKAGE_PATH }}/output'
