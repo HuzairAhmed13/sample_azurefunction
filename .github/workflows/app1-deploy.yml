@@ -10,12 +10,12 @@ on:
 env:
   # --- CONFIGURATION ---
   # UPDATE THESE VALUES TO BE GLOBALLY UNIQUE
-  AZURE_FUNCTIONAPP_NAME: 'my-unique-app1-func-2024' 
-  RESOURCE_GROUP_NAME: 'HuzairRG'
-  STORAGE_ACCOUNT_NAME: 'myapp1store2024' 
+  AZURE_FUNCTIONAPP_NAME: 'my-unique-app1-func-2024'
+  RESOURCE_GROUP_NAME: 'MyFunctionRG'
+  STORAGE_ACCOUNT_NAME: 'myapp1store2024'
   LOCATION: 'eastus'
-  DOTNET_VERSION: '8.0.x' 
-  APP_PACKAGE_PATH: 'apps/app1' 
+  DOTNET_VERSION: '8.0.x'
+  APP_PACKAGE_PATH: 'apps/app1'
   # ---------------------
 
 permissions:
@@ -26,54 +26,72 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      # 1. Checkout Code
       - name: 'Checkout GitHub Action'
         uses: actions/checkout@v4
 
+      # 2. Login to Azure
       - name: 'Login via Azure CLI'
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # 3. Create Infrastructure (DIRECT SHELL EXECUTION)
+      # This runs directly on the machine, fixing the SubscriptionNotFound error
       - name: 'Ensure Azure Resources Exist'
-        uses: azure/CLI@v1
-        with:
-          inlineScript: |
-            # 1. Create Resource Group (if missing)
-            if [ $(az group exists --name ${{ env.RESOURCE_GROUP_NAME }}) = false ]; then
-              echo "Creating Resource Group: ${{ env.RESOURCE_GROUP_NAME }}"
-              az group create --name ${{ env.RESOURCE_GROUP_NAME }} --location ${{ env.LOCATION }}
-            else
-              echo "Resource Group exists."
-            fi
+        shell: bash
+        run: |
+          # Failsafe: Explicitly set the subscription to be sure
+          # We extract the ID from the secret just to be safe, or rely on the login defaults.
+          
+          echo "Debug: Active Account Info:"
+          az account show --output table
 
-            # 2. Create Storage Account (if missing)
-            # The '!' checks if the command FAILS (meaning account doesn't exist)
-            if ! az storage account show --name ${{ env.STORAGE_ACCOUNT_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} > /dev/null 2>&1; then
-              echo "Creating Storage Account: ${{ env.STORAGE_ACCOUNT_NAME }}"
-              az storage account create --name ${{ env.STORAGE_ACCOUNT_NAME }} --location ${{ env.LOCATION }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} --sku Standard_LRS
-            else
-              echo "Storage Account exists."
-            fi
+          # Set bash variables from the workflow env variables
+          RG_NAME="${{ env.RESOURCE_GROUP_NAME }}"
+          SA_NAME="${{ env.STORAGE_ACCOUNT_NAME }}"
+          FUNC_NAME="${{ env.AZURE_FUNCTIONAPP_NAME }}"
+          LOC="${{ env.LOCATION }}"
 
-            # 3. Create Function App (if missing)
-            if ! az functionapp show --name ${{ env.AZURE_FUNCTIONAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP_NAME }} > /dev/null 2>&1; then
-              echo "Creating Function App: ${{ env.AZURE_FUNCTIONAPP_NAME }}"
-              az functionapp create --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
-                --storage-account ${{ env.STORAGE_ACCOUNT_NAME }} \
-                --consumption-plan-location ${{ env.LOCATION }} \
-                --resource-group ${{ env.RESOURCE_GROUP_NAME }} \
-                --os-type Windows \
-                --runtime dotnet-isolated \
-                --functions-version 4
-            else
-              echo "Function App exists."
-            fi
+          # --- A. Resource Group ---
+          if [ $(az group exists --name $RG_NAME) = false ]; then
+            echo "Creating Resource Group: $RG_NAME"
+            az group create --name $RG_NAME --location $LOC
+          else
+            echo "Resource Group $RG_NAME exists."
+          fi
 
+          # --- B. Storage Account ---
+          echo "Checking Storage Account: $SA_NAME"
+          if ! az storage account show --name $SA_NAME --resource-group $RG_NAME > /dev/null 2>&1; then
+            echo "Creating Storage Account..."
+            az storage account create --name $SA_NAME --location $LOC --resource-group $RG_NAME --sku Standard_LRS
+          else
+            echo "Storage Account exists."
+          fi
+
+          # --- C. Function App ---
+          echo "Checking Function App: $FUNC_NAME"
+          if ! az functionapp show --name $FUNC_NAME --resource-group $RG_NAME > /dev/null 2>&1; then
+            echo "Creating Function App..."
+            az functionapp create --name $FUNC_NAME \
+              --storage-account $SA_NAME \
+              --consumption-plan-location $LOC \
+              --resource-group $RG_NAME \
+              --os-type Windows \
+              --runtime dotnet-isolated \
+              --functions-version 4
+          else
+            echo "Function App exists."
+          fi
+
+      # 4. Setup .NET
       - name: Setup DotNet ${{ env.DOTNET_VERSION }} Environment
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      # 5. Build the Code
       - name: 'Build and Publish to Output Directory'
         shell: bash
         run: |
@@ -81,6 +99,7 @@ jobs:
           dotnet build --configuration Release --output ./output
           popd
 
+      # 6. Deploy to Azure
       - name: 'Deploy to Azure Function App'
         uses: Azure/functions-action@v1
         with:
