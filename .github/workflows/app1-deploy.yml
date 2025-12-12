@@ -1,58 +1,96 @@
-name: Deploy Azure Function
+name: Deploy App1 (OIDC)
 
 on:
   push:
-    branches:
-      - main
+    branches: ["main"]
+    paths:
+      - 'apps/MyAzureFunction/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write # <--- REQUIRED FOR OIDC
+  contents: read
+
+env:
+  AZURE_FUNCTIONAPP_NAME: 'my-unique-app1-func-2024'
+  RESOURCE_GROUP_NAME: 'MyFunctionRG'
+  STORAGE_ACCOUNT_NAME: 'myapp1store2024'
+  LOCATION: 'eastus'
+  DOTNET_VERSION: '8.0.x'
+  APP_PACKAGE_PATH: 'apps/app1'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      # 1. OIDC Login (No client secret needed!)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Login to Azure
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      # 2. Create Infrastructure
+      - name: Ensure Azure Resources Exist
+        shell: bash
+        run: |
+          # The login action sets the context, but we will be explicit to avoid errors
+          SUB_ID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          
+          # Force set the subscription
+          az account set --subscription $SUB_ID
 
-    - name: Debug Subscription
-      run: |
-        echo "Active Azure Subscription:"
-        az account show -o table
+          echo "Using Subscription: $SUB_ID"
 
-    - name: Deploy Azure Resources
-      run: |
-        SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-        echo "Using Subscription ID: $SUBSCRIPTION_ID"
+          # Variables
+          RG="${{ env.RESOURCE_GROUP_NAME }}"
+          SA="${{ env.STORAGE_ACCOUNT_NAME }}"
+          FUNC="${{ env.AZURE_FUNCTIONAPP_NAME }}"
+          LOC="${{ env.LOCATION }}"
 
-        RG="MyFunctionRG"
-        LOCATION="eastus"
-        STORAGE="myapp1store2024"
-        FUNCAPP="myfunc2024app"
+          # Create Resource Group
+          echo "Creating RG: $RG"
+          az group create --name $RG --location $LOC
 
-        az group create -n $RG -l $LOCATION
+          # Create Storage
+          echo "Checking Storage: $SA"
+          if ! az storage account show --name $SA --resource-group $RG > /dev/null 2>&1; then
+            az storage account create --name $SA --resource-group $RG --location $LOC --sku Standard_LRS
+          fi
 
-        az storage account create \
-          -g $RG \
-          -n $STORAGE \
-          -l $LOCATION \
-          --sku Standard_LRS
+          # Create Function
+          echo "Checking Function: $FUNC"
+          if ! az functionapp show --name $FUNC --resource-group $RG > /dev/null 2>&1; then
+            az functionapp create --name $FUNC \
+              --storage-account $SA \
+              --consumption-plan-location $LOC \
+              --resource-group $RG \
+              --os-type Windows \
+              --runtime dotnet-isolated \
+              --functions-version 4
+          fi
 
-        az functionapp create \
-          --resource-group $RG \
-          --name $FUNCAPP \
-          --storage-account $STORAGE \
-          --consumption-plan-location $LOCATION \
-          --runtime python \
-          --functions-version 4
+      # 3. Setup .NET
+      - name: Setup DotNet
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-    - name: Deploy to Function App
-      uses: Azure/functions-action@v1
-      with:
-        app-name: myfunc2024app
-        package: '.'
+      # 4. Build
+      - name: Build Code
+        shell: bash
+        run: |
+          pushd './${{ env.APP_PACKAGE_PATH }}'
+          dotnet build --configuration Release --output ./output
+          popd
 
+      # 5. Deploy
+      - name: Deploy to Azure
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          package: '${{ env.APP_PACKAGE_PATH }}/output'
