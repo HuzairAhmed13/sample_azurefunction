@@ -17,7 +17,7 @@ env:
   STORAGE_ACCOUNT_NAME: 'myapp1store2024'
   LOCATION: 'eastus'
   DOTNET_VERSION: '8.0.x'
-  APP_PACKAGE_PATH: 'apps/MyAzureFunction'
+  APP_PACKAGE_PATH: 'apps/MyFunctionApp'
 
 jobs:
   build-and-deploy:
