@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write # <--- REQUIRED FOR OIDC
+  id-token: write
   contents: read
 
 env:
@@ -26,7 +26,6 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # 1. OIDC Login (No client secret needed!)
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
@@ -34,53 +33,55 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # 2. Create Infrastructure
       - name: Ensure Azure Resources Exist
         shell: bash
         run: |
-          # The login action sets the context, but we will be explicit to avoid errors
+          # Capture the Subscription ID from the secret
           SUB_ID="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
           
-          # Force set the subscription
-          az account set --subscription $SUB_ID
-
-          echo "Using Subscription: $SUB_ID"
-
           # Variables
           RG="${{ env.RESOURCE_GROUP_NAME }}"
           SA="${{ env.STORAGE_ACCOUNT_NAME }}"
           FUNC="${{ env.AZURE_FUNCTIONAPP_NAME }}"
           LOC="${{ env.LOCATION }}"
 
-          # Create Resource Group
-          echo "Creating RG: $RG"
-          az group create --name $RG --location $LOC
+          echo "Using Subscription: $SUB_ID"
 
-          # Create Storage
+          # 1. Resource Group
+          # We force --subscription to ensure context is never lost
+          echo "Ensuring RG: $RG"
+          az group create --name $RG --location $LOC --subscription "$SUB_ID"
+
+          # 2. Storage Account
           echo "Checking Storage: $SA"
-          if ! az storage account show --name $SA --resource-group $RG > /dev/null 2>&1; then
-            az storage account create --name $SA --resource-group $RG --location $LOC --sku Standard_LRS
+          # Check using the explicit subscription
+          if ! az storage account show --name $SA --resource-group $RG --subscription "$SUB_ID" > /dev/null 2>&1; then
+            echo "Creating Storage..."
+            az storage account create --name $SA --resource-group $RG --location $LOC --sku Standard_LRS --subscription "$SUB_ID"
+            
+            # Wait 10s for Azure to propagate DNS (Prevents "Not Found" errors in next step)
+            sleep 10
           fi
 
-          # Create Function
+          # 3. Function App
           echo "Checking Function: $FUNC"
-          if ! az functionapp show --name $FUNC --resource-group $RG > /dev/null 2>&1; then
+          if ! az functionapp show --name $FUNC --resource-group $RG --subscription "$SUB_ID" > /dev/null 2>&1; then
+            echo "Creating Function App..."
             az functionapp create --name $FUNC \
               --storage-account $SA \
               --consumption-plan-location $LOC \
               --resource-group $RG \
               --os-type Windows \
               --runtime dotnet-isolated \
-              --functions-version 4
+              --functions-version 4 \
+              --subscription "$SUB_ID"
           fi
 
-      # 3. Setup .NET
       - name: Setup DotNet
         uses: actions/setup-dotnet@v1
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      # 4. Build
       - name: Build Code
         shell: bash
         run: |
@@ -88,7 +89,6 @@ jobs:
           dotnet build --configuration Release --output ./output
           popd
 
-      # 5. Deploy
       - name: Deploy to Azure
         uses: Azure/functions-action@v1
         with:
